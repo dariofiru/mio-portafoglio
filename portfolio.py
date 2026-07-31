@@ -127,8 +127,6 @@ with st.spinner("Aggiornamento prezzi e tasso di cambio in corso..."):
                 "Stato Mercato": stato_mercato,
                 "Titolo": ticker,
                 "Quantità": qty,
-                "Prezzo Attuale (€)": f"{round(prezzo_corrente_eur, 2)} €",
-                "Valore Posizione (€)": f"{round(valore_totale_eur, 2)} €",
                 "Var. Giornaliera (€)": f"{round(impatto_giornaliero_eur, 2)} €",
                 "Var. %": f"{round(variazione_percentuale, 2)}%"
             })
