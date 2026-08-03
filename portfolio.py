@@ -1,7 +1,63 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, time as dt_time, timedelta
+from zoneinfo import ZoneInfo
+
+FUSO_ORARIO_ITALIA = ZoneInfo("Europe/Rome")
+
+# Orari di apertura/chiusura dei mercati, in ora italiana (Europe/Rome).
+# Definiti una sola volta qui e riusati sia per le "pillole" Aperto/Chiuso
+# nella tabella titoli, sia per il riepilogo mercati con il conto alla rovescia.
+ORARI_MERCATI = {
+    "Borsa Italiana (MTA)": {"suffisso": ".MI", "apertura": dt_time(9, 0), "chiusura": dt_time(17, 30)},
+    "USA (NASDAQ / NYSE)": {"suffisso": None, "apertura": dt_time(15, 30), "chiusura": dt_time(22, 0)},
+}
+
+
+def formatta_intervallo(delta):
+    """Trasforma un timedelta in una stringa leggibile tipo '3h 35m' o '1g 2h 10m'."""
+    secondi_totali = int(delta.total_seconds())
+    if secondi_totali < 0:
+        secondi_totali = 0
+    giorni, resto = divmod(secondi_totali, 86400)
+    ore, resto = divmod(resto, 3600)
+    minuti, _ = divmod(resto, 60)
+    if giorni > 0:
+        return f"{giorni}g {ore}h {minuti}m"
+    return f"{ore}h {minuti:02d}m"
+
+
+def calcola_stato_mercato(ora_italia, apertura, chiusura):
+    """Dato l'orario attuale (già in fuso Europe/Rome) e gli orari di apertura/chiusura
+    di un mercato, restituisce (etichetta_stato, testo_countdown)."""
+    apertura_oggi = ora_italia.replace(hour=apertura.hour, minute=apertura.minute, second=0, microsecond=0)
+    chiusura_oggi = ora_italia.replace(hour=chiusura.hour, minute=chiusura.minute, second=0, microsecond=0)
+
+    mercato_aperto_oggi = ora_italia.weekday() < 5 and apertura_oggi <= ora_italia <= chiusura_oggi
+    if mercato_aperto_oggi:
+        return "🟢 Aperto", f"Chiude tra {formatta_intervallo(chiusura_oggi - ora_italia)}"
+
+    # Mercato chiuso: cerca la prossima apertura utile (salta i weekend).
+    # NB: non tiene conto delle festività di borsa, solo di sabato/domenica.
+    for giorni_da_aggiungere in range(0, 8):
+        candidato = ora_italia + timedelta(days=giorni_da_aggiungere)
+        candidato_apertura = candidato.replace(hour=apertura.hour, minute=apertura.minute, second=0, microsecond=0)
+        if candidato.weekday() < 5 and candidato_apertura > ora_italia:
+            etichetta = "🔴 Chiuso (Weekend)" if ora_italia.weekday() >= 5 else "🔴 Chiuso"
+            return etichetta, f"Apre tra {formatta_intervallo(candidato_apertura - ora_italia)}"
+
+    return "🔴 Chiuso", "N/D"
+
+
+def costruisci_tabella_mercati():
+    """Costruisce la tabella riassuntiva con lo stato e il countdown di ogni mercato coinvolto."""
+    ora_italia = datetime.now(FUSO_ORARIO_ITALIA)
+    righe = []
+    for nome_mercato, dettagli in ORARI_MERCATI.items():
+        stato, countdown = calcola_stato_mercato(ora_italia, dettagli["apertura"], dettagli["chiusura"])
+        righe.append({"Mercato": nome_mercato, "Stato": stato, "Countdown": countdown})
+    return righe
 
 ### Configurazione della pagina
 
@@ -36,21 +92,19 @@ MIO_PORTAFOGLIO = [
 
 
 def verifica_stato_mercato(ticker):
-    """Verifica se il mercato di riferimento è aperto o chiuso in base all'ora italiana."""
-    ora_attuale = datetime.now().time()
-    giorno_settimana = datetime.now().weekday()
-
-    if giorno_settimana >= 5:
-        return "🔴 Chiuso (Weekend)"
+    """Verifica se il mercato di riferimento è aperto o chiuso in base all'ora italiana.
+    NB: usiamo esplicitamente il fuso orario Europe/Rome, perché se l'app gira su un
+    server ospitato altrove (es. Streamlit Cloud, spesso in UTC), datetime.now() senza
+    fuso orario restituirebbe l'ora del server, non quella italiana, falsando il controllo."""
+    ora_italia = datetime.now(FUSO_ORARIO_ITALIA)
 
     if ticker.endswith(".MI"):
-        inizio = datetime.strptime("09:00", "%H:%M").time()
-        fine = datetime.strptime("17:30", "%H:%M").time()
-        return "🟢 Aperto (Live)" if inizio <= ora_attuale <= fine else "🔴 Chiuso"
+        dettagli = ORARI_MERCATI["Borsa Italiana (MTA)"]
     else:
-        inizio = datetime.strptime("15:30", "%H:%M").time()
-        fine = datetime.strptime("22:00", "%H:%M").time()
-        return "🟢 Aperto (Live)" if inizio <= ora_attuale <= fine else "🔴 Chiuso"
+        dettagli = ORARI_MERCATI["USA (NASDAQ / NYSE)"]
+
+    stato, _ = calcola_stato_mercato(ora_italia, dettagli["apertura"], dettagli["chiusura"])
+    return f"{stato} (Live)" if stato == "🟢 Aperto" else stato
 
 
 def ottieni_tasso_cambio_eur_usd():
@@ -104,6 +158,7 @@ def ottieni_info_dividendi(ticker, qty, tasso_usd_per_eur, is_usa):
 
 dati_totali = []
 dati_dividendi = []
+titoli_falliti = []
 guadagno_totale_giornaliero_eur = 0.0
 totale_dividendi_stimati_eur = 0.0
 prossima_data_assoluta = None
@@ -120,14 +175,28 @@ with st.spinner("Aggiornamento prezzi e tasso di cambio in corso..."):
 
     st.caption(f"Tasso di cambio applicato: 1 € = {round(tasso_usd_per_eur, 4)} $")
 
+    ### 1bis. Mostra lo stato dei mercati coinvolti con il conto alla rovescia
+
+    st.write("### 🕒 Stato dei Mercati")
+    df_mercati = pd.DataFrame(costruisci_tabella_mercati())
+    st.dataframe(df_mercati, use_container_width=True, hide_index=True)
+
     ### 2. Elabora i titoli in portafoglio
 
     for azione in MIO_PORTAFOGLIO:
         ticker = azione["ticker"]
         qty = azione["quantita"]
 
-        info_azione = yf.Ticker(ticker)
-        storico = info_azione.history(period="2d")
+        try:
+            info_azione = yf.Ticker(ticker)
+            # Usiamo una finestra più ampia di "2d": se c'è stato un giorno di festa
+            # di borsa (es. in Italia), period="2d" può restituire solo 1 riga (o 0)
+            # e il titolo sparirebbe silenziosamente dalla tabella. Con 5 giorni e
+            # scartando le righe vuote, prendiamo comunque le ultime due chiusure valide.
+            storico = info_azione.history(period="5d").dropna(subset=["Close"])
+        except Exception as errore:
+            titoli_falliti.append({"Titolo": ticker, "Motivo": f"Errore di rete/API: {errore}"})
+            continue
 
         if len(storico) >= 2:
             prezzo_chiusura_ieri = storico['Close'].iloc[-2]
@@ -190,6 +259,13 @@ with st.spinner("Aggiornamento prezzi e tasso di cambio in corso..."):
                     ),
                     "Importo Stimato (€)": f"{round(info_div['importo_eur'], 2)} €"
                 })
+        else:
+            righe_trovate = len(storico)
+            titoli_falliti.append({
+                "Titolo": ticker,
+                "Motivo": f"Solo {righe_trovate} chiusura/e valida/e trovata/e negli ultimi 5 giorni "
+                          f"(possibile festività di borsa o ticker non riconosciuto da Yahoo Finance)."
+            })
 
 ### 4. Mostra la RISPOSTA SECCA in cima (Tutto convertito coerentemente in Euro)
 
@@ -236,3 +312,9 @@ if dati_dividendi:
     )
 else:
     st.caption("Nessuna informazione sui dividendi disponibile per i titoli in portafoglio.")
+
+### 7. Diagnostica: titoli che non è stato possibile caricare
+
+if titoli_falliti:
+    with st.expander(f"⚠️ {len(titoli_falliti)} titolo/i non caricato/i correttamente — clicca per i dettagli"):
+        st.dataframe(pd.DataFrame(titoli_falliti), use_container_width=True, hide_index=True)
