@@ -66,8 +66,47 @@ def ottieni_tasso_cambio_eur_usd():
         return 1.15
 
 
+def ottieni_info_dividendi(ticker, qty, tasso_usd_per_eur, is_usa):
+    """Stima la prossima data di stacco dividendo e l'importo atteso per la posizione.
+    L'importo è una STIMA basata sul dividendo annuo dichiarato (dividendRate) diviso
+    per la frequenza storica dei pagamenti (es. trimestrale, semestrale, annuale)."""
+    try:
+        azione = yf.Ticker(ticker)
+        info = azione.info
+
+        ex_div_ts = info.get("exDividendDate")
+        dividend_rate = info.get("dividendRate")  # dividendo annuo per azione, valuta originale
+
+        if not dividend_rate:
+            return None
+
+        prossima_data = datetime.fromtimestamp(ex_div_ts) if ex_div_ts else None
+
+        # Stima la frequenza dei pagamenti guardando lo storico dell'ultimo anno
+        divs = azione.dividends
+        frequenza = 1
+        if not divs.empty:
+            un_anno_fa = pd.Timestamp.now(tz=divs.index.tz) - pd.Timedelta(days=365)
+            pagamenti_ultimo_anno = divs[divs.index > un_anno_fa]
+            if len(pagamenti_ultimo_anno) > 0:
+                frequenza = len(pagamenti_ultimo_anno)
+
+        importo_per_azione = dividend_rate / frequenza
+        importo_totale_originale = importo_per_azione * qty
+        importo_totale_eur = (
+            importo_totale_originale / tasso_usd_per_eur if is_usa else importo_totale_originale
+        )
+
+        return {"prossima_data": prossima_data, "importo_eur": importo_totale_eur}
+    except Exception:
+        return None
+
+
 dati_totali = []
+dati_dividendi = []
 guadagno_totale_giornaliero_eur = 0.0
+totale_dividendi_stimati_eur = 0.0
+prossima_data_assoluta = None
 
 st.subheader("Andamento rispetto alla chiusura della sessione precedente")
 
@@ -127,9 +166,30 @@ with st.spinner("Aggiornamento prezzi e tasso di cambio in corso..."):
                 "Stato Mercato": stato_mercato,
                 "Titolo": ticker,
                 "Quantità": qty,
+                "Prezzo Attuale (€)": f"{round(prezzo_corrente_eur, 2)} €",
+                "Valore Posizione (€)": f"{round(valore_totale_eur, 2)} €",
                 "Var. Giornaliera (€)": f"{round(impatto_giornaliero_eur, 2)} €",
                 "Var. %": f"{round(variazione_percentuale, 2)}%"
             })
+
+            ### 3bis. Stima prossimo dividendo per questo titolo
+
+            info_div = ottieni_info_dividendi(ticker, qty, tasso_usd_per_eur, is_usa)
+            if info_div:
+                totale_dividendi_stimati_eur += info_div["importo_eur"]
+                if info_div["prossima_data"] and (
+                    prossima_data_assoluta is None or info_div["prossima_data"] < prossima_data_assoluta
+                ):
+                    prossima_data_assoluta = info_div["prossima_data"]
+
+                dati_dividendi.append({
+                    "Titolo": ticker,
+                    "Prossimo Stacco": (
+                        info_div["prossima_data"].strftime("%d/%m/%Y")
+                        if info_div["prossima_data"] else "N/D"
+                    ),
+                    "Importo Stimato (€)": f"{round(info_div['importo_eur'], 2)} €"
+                })
 
 ### 4. Mostra la RISPOSTA SECCA in cima (Tutto convertito coerentemente in Euro)
 
@@ -146,3 +206,33 @@ if dati_totali:
     st.dataframe(df, use_container_width=True, hide_index=True)
 else:
     st.warning("Non è stato possibile recuperare i dati dei titoli. Verifica i ticker.")
+
+### 6. Mostra la stima dei prossimi dividendi
+
+st.write("---")
+st.write("### 💰 Prossimi Dividendi Stimati")
+
+if dati_dividendi:
+    if prossima_data_assoluta:
+        st.info(
+            f"📅 Il prossimo stacco dividendo previsto è il "
+            f"**{prossima_data_assoluta.strftime('%d/%m/%Y')}**, e nei prossimi 12 mesi il portafoglio "
+            f"dovrebbe incassare circa **{round(totale_dividendi_stimati_eur, 2)} €** di dividendi complessivi "
+            f"(stima basata sui dati storici, non garantita)."
+        )
+    else:
+        st.info(
+            f"Non è stata trovata una data di stacco precisa per i prossimi dividendi, ma il portafoglio "
+            f"dovrebbe incassare circa **{round(totale_dividendi_stimati_eur, 2)} €** nei prossimi 12 mesi "
+            f"(stima basata sui dati storici, non garantita)."
+        )
+
+    df_div = pd.DataFrame(dati_dividendi).sort_values("Prossimo Stacco")
+    st.dataframe(df_div, use_container_width=True, hide_index=True)
+    st.caption(
+        "⚠️ Le date e gli importi sono stime basate sui dati disponibili su Yahoo Finance "
+        "(dividendo annuo dichiarato / frequenza storica dei pagamenti). Possono essere imprecisi "
+        "o mancanti, specialmente per i titoli italiani."
+    )
+else:
+    st.caption("Nessuna informazione sui dividendi disponibile per i titoli in portafoglio.")
