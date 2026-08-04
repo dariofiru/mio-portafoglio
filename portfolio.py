@@ -89,7 +89,6 @@ MIO_PORTAFOGLIO = [
     {"ticker": "GD", "quantita": 5},
     {"ticker": "COST", "quantita": 2},
     {"ticker": "PG", "quantita": 8},
-    {"ticker": "JPM", "quantita": 14},
     {"ticker": "AIG", "quantita": 27},
     {"ticker": "GOOGL", "quantita": 20},
     {"ticker": "XOM", "quantita": 21},
