@@ -64,6 +64,18 @@ def costruisci_tabella_mercati():
 st.set_page_config(page_title="Il mio Portafoglio", layout="wide", page_icon="📈")
 st.title("📈 Monitoraggio Portafoglio Azionario (in €)")
 
+### Pulsante di aggiornamento manuale + orario ultimo aggiornamento
+# Nota: lo script non usa cache, quindi ogni rerun (incluso il click su questo bottone)
+# riscarica già tutti i dati da Yahoo Finance. st.rerun() forza comunque il rerun in modo
+# esplicito e affidabile, invece di contare solo sul comportamento implicito del bottone.
+
+col_refresh, col_timestamp = st.columns([1, 4])
+with col_refresh:
+    if st.button("🔄 Aggiorna dati"):
+        st.rerun()
+with col_timestamp:
+    st.caption(f"Ultimo aggiornamento: {datetime.now(FUSO_ORARIO_ITALIA).strftime('%d/%m/%Y %H:%M:%S')}")
+
 ### DEFINISCI QUI I TUOI INVESTIMENTI
 
 MIO_PORTAFOGLIO = [
@@ -120,14 +132,48 @@ def ottieni_tasso_cambio_eur_usd():
         return 1.15
 
 
-def ottieni_info_dividendi(ticker, qty, tasso_usd_per_eur, is_usa):
+def ottieni_prezzi_quote(ticker):
+    """Recupera prezzo attuale e chiusura precedente direttamente dai campi che Yahoo Finance
+    usa per calcolare la variazione % mostrata sui siti di borsa (previousClose / currentPrice),
+    invece di ricostruirli dallo storico giornaliero. Per alcuni titoli .MI lo storico su finestre
+    brevi risultava incompleto (chiusure "raw" mancanti per giorni di borsa realmente aperti),
+    facendo confrontare il prezzo attuale con una chiusura di 4-5 giorni prima e gonfiando la
+    variazione % calcolata. Usando gli stessi campi diretti di Yahoo evitiamo il problema.
+    Ritorna: (oggetto Ticker, dict info, prezzo_attuale, prezzo_precedente, etichetta_fonte)."""
+    azione = yf.Ticker(ticker)
+    try:
+        info = azione.info or {}
+    except Exception:
+        info = {}
+
+    prezzo_corrente = info.get("currentPrice") or info.get("regularMarketPrice")
+    prezzo_precedente = info.get("previousClose") or info.get("regularMarketPreviousClose")
+
+    if prezzo_corrente is not None and prezzo_precedente is not None:
+        return azione, info, float(prezzo_corrente), float(prezzo_precedente), "quote Yahoo (previousClose)"
+
+    # Fallback: se i campi diretti non sono disponibili, ricostruiamo dallo storico giornaliero
+    try:
+        storico = azione.history(period="1mo", auto_adjust=False).dropna(subset=["Close"])
+        if len(storico) >= 2:
+            return (
+                azione, info,
+                float(storico["Close"].iloc[-1]), float(storico["Close"].iloc[-2]),
+                "storico giornaliero (fallback)"
+            )
+    except Exception:
+        pass
+
+    return azione, info, None, None, "non disponibile"
+
+
+def ottieni_info_dividendi(azione, info, qty, tasso_usd_per_eur, is_usa):
     """Stima la prossima data di stacco dividendo e l'importo atteso per la posizione.
     L'importo è una STIMA basata sul dividendo annuo dichiarato (dividendRate) diviso
-    per la frequenza storica dei pagamenti (es. trimestrale, semestrale, annuale)."""
+    per la frequenza storica dei pagamenti (es. trimestrale, semestrale, annuale).
+    Riceve 'azione' (oggetto Ticker) e 'info' (dict) già scaricati da ottieni_prezzi_quote,
+    per evitare di richiamare due volte l'API Yahoo per lo stesso titolo."""
     try:
-        azione = yf.Ticker(ticker)
-        info = azione.info
-
         ex_div_ts = info.get("exDividendDate")
         dividend_rate = info.get("dividendRate")  # dividendo annuo per azione, valuta originale
 
@@ -184,28 +230,17 @@ with st.spinner("Aggiornamento prezzi e tasso di cambio in corso..."):
 
     ### 2. Elabora i titoli in portafoglio
 
-    for azione in MIO_PORTAFOGLIO:
-        ticker = azione["ticker"]
-        qty = azione["quantita"]
+    for azione_item in MIO_PORTAFOGLIO:
+        ticker = azione_item["ticker"]
+        qty = azione_item["quantita"]
 
         try:
-            info_azione = yf.Ticker(ticker)
-            # Perché period="1mo" e non "5d": per alcuni titoli .MI, Yahoo Finance a volte
-            # restituisce dati incompleti/con buchi su finestre brevi (es. period="5d"),
-            # arrivando a saltare giorni di borsa realmente aperti (non weekend). Il risultato
-            # era che "chiusura di ieri" finiva per essere in realtà la chiusura di 4-5 giorni
-            # prima, gonfiando la variazione % calcolata. Con una finestra più ampia (1 mese)
-            # e prendendo comunque solo le ultime due chiusure valide, il rischio si riduce.
-            storico = info_azione.history(period="1mo", auto_adjust=False).dropna(subset=["Close"])
+            azione_obj, info, prezzo_corrente, prezzo_chiusura_ieri, fonte_prezzo = ottieni_prezzi_quote(ticker)
         except Exception as errore:
             titoli_falliti.append({"Titolo": ticker, "Motivo": f"Errore di rete/API: {errore}"})
             continue
 
-        if len(storico) >= 2:
-            data_ieri = storico.index[-2]
-            data_oggi = storico.index[-1]
-            prezzo_chiusura_ieri = storico['Close'].iloc[-2]
-            prezzo_corrente = storico['Close'].iloc[-1]
+        if prezzo_corrente is not None and prezzo_chiusura_ieri is not None:
 
             ### Calcoli della variazione nella valuta originale del titolo
 
@@ -214,9 +249,8 @@ with st.spinner("Aggiornamento prezzi e tasso di cambio in corso..."):
 
             dettaglio_debug.append({
                 "Titolo": ticker,
-                "Data rif. precedente": data_ieri.strftime("%d/%m/%Y %H:%M"),
+                "Fonte": fonte_prezzo,
                 "Chiusura precedente (raw)": round(prezzo_chiusura_ieri, 4),
-                "Data prezzo attuale": data_oggi.strftime("%d/%m/%Y %H:%M"),
                 "Prezzo attuale (raw)": round(prezzo_corrente, 4),
                 "Var. % calcolata": f"{round(variazione_percentuale, 2)}%",
             })
@@ -257,7 +291,7 @@ with st.spinner("Aggiornamento prezzi e tasso di cambio in corso..."):
 
             ### 3bis. Stima prossimo dividendo per questo titolo
 
-            info_div = ottieni_info_dividendi(ticker, qty, tasso_usd_per_eur, is_usa)
+            info_div = ottieni_info_dividendi(azione_obj, info, qty, tasso_usd_per_eur, is_usa)
             if info_div:
                 totale_dividendi_stimati_eur += info_div["importo_eur"]
                 if info_div["prossima_data"] and (
@@ -274,11 +308,10 @@ with st.spinner("Aggiornamento prezzi e tasso di cambio in corso..."):
                     "Importo Stimato (€)": f"{round(info_div['importo_eur'], 2)} €"
                 })
         else:
-            righe_trovate = len(storico)
             titoli_falliti.append({
                 "Titolo": ticker,
-                "Motivo": f"Solo {righe_trovate} chiusura/e valida/e trovata/e nell'ultimo mese "
-                          f"(possibile ticker non riconosciuto da Yahoo Finance, o dati non disponibili)."
+                "Motivo": f"Prezzo attuale e/o chiusura precedente non disponibili "
+                          f"(ultima fonte tentata: {fonte_prezzo})."
             })
 
 ### 4. Mostra la RISPOSTA SECCA in cima (Tutto convertito coerentemente in Euro)
