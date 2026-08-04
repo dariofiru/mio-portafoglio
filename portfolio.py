@@ -190,16 +190,13 @@ with st.spinner("Aggiornamento prezzi e tasso di cambio in corso..."):
 
         try:
             info_azione = yf.Ticker(ticker)
-            # Usiamo una finestra più ampia di "2d": se c'è stato un giorno di festa
-            # di borsa (es. in Italia), period="2d" può restituire solo 1 riga (o 0)
-            # e il titolo sparirebbe silenziosamente dalla tabella. Con 5 giorni e
-            # scartando le righe vuote, prendiamo comunque le ultime due chiusure valide.
-            # auto_adjust=False: per default yfinance "aggiusta" retroattivamente le
-            # chiusure passate per tenere conto dei dividendi staccati (e degli split).
-            # Questo fa sì che, nei giorni intorno a uno stacco dividendo, la variazione %
-            # calcolata risulti diversa da quella mostrata sul mercato reale (che confronta
-            # prezzi non aggiustati). Con auto_adjust=False otteniamo i prezzi "as-is".
-            storico = info_azione.history(period="5d", auto_adjust=False).dropna(subset=["Close"])
+            # Perché period="1mo" e non "5d": per alcuni titoli .MI, Yahoo Finance a volte
+            # restituisce dati incompleti/con buchi su finestre brevi (es. period="5d"),
+            # arrivando a saltare giorni di borsa realmente aperti (non weekend). Il risultato
+            # era che "chiusura di ieri" finiva per essere in realtà la chiusura di 4-5 giorni
+            # prima, gonfiando la variazione % calcolata. Con una finestra più ampia (1 mese)
+            # e prendendo comunque solo le ultime due chiusure valide, il rischio si riduce.
+            storico = info_azione.history(period="1mo", auto_adjust=False).dropna(subset=["Close"])
         except Exception as errore:
             titoli_falliti.append({"Titolo": ticker, "Motivo": f"Errore di rete/API: {errore}"})
             continue
@@ -280,8 +277,8 @@ with st.spinner("Aggiornamento prezzi e tasso di cambio in corso..."):
             righe_trovate = len(storico)
             titoli_falliti.append({
                 "Titolo": ticker,
-                "Motivo": f"Solo {righe_trovate} chiusura/e valida/e trovata/e negli ultimi 5 giorni "
-                          f"(possibile festività di borsa o ticker non riconosciuto da Yahoo Finance)."
+                "Motivo": f"Solo {righe_trovate} chiusura/e valida/e trovata/e nell'ultimo mese "
+                          f"(possibile ticker non riconosciuto da Yahoo Finance, o dati non disponibili)."
             })
 
 ### 4. Mostra la RISPOSTA SECCA in cima (Tutto convertito coerentemente in Euro)
