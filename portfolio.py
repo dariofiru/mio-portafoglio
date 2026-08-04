@@ -139,7 +139,10 @@ def ottieni_prezzi_quote(ticker):
     brevi risultava incompleto (chiusure "raw" mancanti per giorni di borsa realmente aperti),
     facendo confrontare il prezzo attuale con una chiusura di 4-5 giorni prima e gonfiando la
     variazione % calcolata. Usando gli stessi campi diretti di Yahoo evitiamo il problema.
-    Ritorna: (oggetto Ticker, dict info, prezzo_attuale, prezzo_precedente, etichetta_fonte)."""
+    Ritorna anche l'orario dell'ultimo aggiornamento del prezzo (regularMarketTime): quando un
+    mercato è chiuso o non ha ancora aperto "oggi", il prezzo/variazione mostrati si riferiscono
+    all'ultima sessione conclusa, non necessariamente alla giornata corrente per quel mercato.
+    Ritorna: (oggetto Ticker, dict info, prezzo_attuale, prezzo_precedente, etichetta_fonte, orario_quotazione)."""
     azione = yf.Ticker(ticker)
     try:
         info = azione.info or {}
@@ -149,8 +152,16 @@ def ottieni_prezzi_quote(ticker):
     prezzo_corrente = info.get("currentPrice") or info.get("regularMarketPrice")
     prezzo_precedente = info.get("previousClose") or info.get("regularMarketPreviousClose")
 
+    orario_ts = info.get("regularMarketTime")
+    orario_quotazione = (
+        datetime.fromtimestamp(orario_ts, tz=FUSO_ORARIO_ITALIA) if orario_ts else None
+    )
+
     if prezzo_corrente is not None and prezzo_precedente is not None:
-        return azione, info, float(prezzo_corrente), float(prezzo_precedente), "quote Yahoo (previousClose)"
+        return (
+            azione, info, float(prezzo_corrente), float(prezzo_precedente),
+            "quote Yahoo (previousClose)", orario_quotazione
+        )
 
     # Fallback: se i campi diretti non sono disponibili, ricostruiamo dallo storico giornaliero
     try:
@@ -159,12 +170,12 @@ def ottieni_prezzi_quote(ticker):
             return (
                 azione, info,
                 float(storico["Close"].iloc[-1]), float(storico["Close"].iloc[-2]),
-                "storico giornaliero (fallback)"
+                "storico giornaliero (fallback)", storico.index[-1].to_pydatetime()
             )
     except Exception:
         pass
 
-    return azione, info, None, None, "non disponibile"
+    return azione, info, None, None, "non disponibile", None
 
 
 def ottieni_info_dividendi(azione, info, qty, tasso_usd_per_eur, is_usa):
@@ -206,9 +217,12 @@ dati_totali = []
 dati_dividendi = []
 titoli_falliti = []
 dettaglio_debug = []
-guadagno_totale_giornaliero_eur = 0.0
+guadagno_oggi_eur = 0.0
+guadagno_sessioni_precedenti_eur = 0.0
+titoli_sessione_precedente = []
 totale_dividendi_stimati_eur = 0.0
 prossima_data_assoluta = None
+oggi_italia = datetime.now(FUSO_ORARIO_ITALIA).date()
 
 st.subheader("Andamento rispetto alla chiusura della sessione precedente")
 
@@ -227,6 +241,11 @@ with st.spinner("Aggiornamento prezzi e tasso di cambio in corso..."):
     st.write("### 🕒 Stato dei Mercati")
     df_mercati = pd.DataFrame(costruisci_tabella_mercati())
     st.dataframe(df_mercati, use_container_width=True, hide_index=True)
+    st.caption(
+        "ℹ️ Se un mercato è chiuso o non ha ancora aperto oggi, prezzo e variazione % mostrati "
+        "per i suoi titoli si riferiscono all'ultima sessione conclusa (colonna 'Aggiornato al' "
+        "nella tabella sotto), non necessariamente alla giornata corrente per quel mercato."
+    )
 
     ### 2. Elabora i titoli in portafoglio
 
@@ -235,7 +254,9 @@ with st.spinner("Aggiornamento prezzi e tasso di cambio in corso..."):
         qty = azione_item["quantita"]
 
         try:
-            azione_obj, info, prezzo_corrente, prezzo_chiusura_ieri, fonte_prezzo = ottieni_prezzi_quote(ticker)
+            azione_obj, info, prezzo_corrente, prezzo_chiusura_ieri, fonte_prezzo, orario_quotazione = (
+                ottieni_prezzi_quote(ticker)
+            )
         except Exception as errore:
             titoli_falliti.append({"Titolo": ticker, "Motivo": f"Errore di rete/API: {errore}"})
             continue
@@ -273,9 +294,22 @@ with st.spinner("Aggiornamento prezzi e tasso di cambio in corso..."):
                 valore_totale_eur = valore_totale_originale
                 impatto_giornaliero_eur = impatto_giornaliero_originale
 
-            ### Somma il guadagno/perdita convertito al totale del portafoglio
+            ### Conta il guadagno/perdita nel totale "di oggi" SOLO se la quotazione si riferisce
+            ### davvero alla sessione odierna. Se il mercato di quel titolo non ha ancora aperto
+            ### oggi, il suo numero riguarda una sessione già conclusa (es. ieri) e sommarlo al
+            ### totale odierno significherebbe contare due volte un guadagno già realizzato.
 
-            guadagno_totale_giornaliero_eur += impatto_giornaliero_eur
+            sessione_e_di_oggi = orario_quotazione is not None and orario_quotazione.date() == oggi_italia
+
+            if sessione_e_di_oggi:
+                guadagno_oggi_eur += impatto_giornaliero_eur
+            else:
+                guadagno_sessioni_precedenti_eur += impatto_giornaliero_eur
+                titoli_sessione_precedente.append({
+                    "Titolo": ticker,
+                    "Var. Giornaliera (€)": f"{round(impatto_giornaliero_eur, 2)} €",
+                    "Riferita al": orario_quotazione.strftime("%d/%m/%Y") if orario_quotazione else "N/D"
+                })
 
             stato_mercato = verifica_stato_mercato(ticker)
 
@@ -286,7 +320,8 @@ with st.spinner("Aggiornamento prezzi e tasso di cambio in corso..."):
                 "Prezzo Attuale (€)": f"{round(prezzo_corrente_eur, 2)} €",
                 "Valore Posizione (€)": f"{round(valore_totale_eur, 2)} €",
                 "Var. Giornaliera (€)": f"{round(impatto_giornaliero_eur, 2)} €",
-                "Var. %": f"{round(variazione_percentuale, 2)}%"
+                "Var. %": f"{round(variazione_percentuale, 2)}%",
+                "Aggiornato al": orario_quotazione.strftime("%d/%m %H:%M") if orario_quotazione else "N/D"
             })
 
             ### 3bis. Stima prossimo dividendo per questo titolo
@@ -315,11 +350,25 @@ with st.spinner("Aggiornamento prezzi e tasso di cambio in corso..."):
             })
 
 ### 4. Mostra la RISPOSTA SECCA in cima (Tutto convertito coerentemente in Euro)
+# Conta solo i mercati che hanno già mosso OGGI: se un mercato non ha ancora aperto,
+# il suo numero si riferisce a una sessione già passata e già riflessa nel valore di ieri,
+# quindi non va aggiunto qui per evitare di contare due volte lo stesso guadagno.
 
-if guadagno_totale_giornaliero_eur >= 0:
-    st.success(f"### Oggi stai GUADAGNANDO:  +{round(guadagno_totale_giornaliero_eur, 2)} € rispetto a ieri.")
+if guadagno_oggi_eur >= 0:
+    st.success(f"### Oggi stai GUADAGNANDO:  +{round(guadagno_oggi_eur, 2)} € rispetto a ieri.")
 else:
-    st.error(f"### Oggi stai PERDENDO:  {round(guadagno_totale_giornaliero_eur, 2)} € rispetto a ieri.")
+    st.error(f"### Oggi stai PERDENDO:  {round(guadagno_oggi_eur, 2)} € rispetto a ieri.")
+
+if titoli_sessione_precedente:
+    segno = "+" if guadagno_sessioni_precedenti_eur >= 0 else ""
+    st.info(
+        f"⏳ **{len(titoli_sessione_precedente)} titolo/i non hanno ancora aperto oggi** "
+        f"(la loro ultima sessione disponibile vale {segno}{round(guadagno_sessioni_precedenti_eur, 2)} €, "
+        f"già riflessi nel valore del portafoglio da quella sessione — non incluso nel numero sopra "
+        f"per evitare di contarlo due volte)."
+    )
+    with st.expander("Titoli in attesa di apertura odierna"):
+        st.dataframe(pd.DataFrame(titoli_sessione_precedente), use_container_width=True, hide_index=True)
 
 ### 5. Mostra la tabella dei dettagli
 
