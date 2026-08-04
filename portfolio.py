@@ -193,7 +193,12 @@ with st.spinner("Aggiornamento prezzi e tasso di cambio in corso..."):
             # di borsa (es. in Italia), period="2d" può restituire solo 1 riga (o 0)
             # e il titolo sparirebbe silenziosamente dalla tabella. Con 5 giorni e
             # scartando le righe vuote, prendiamo comunque le ultime due chiusure valide.
-            storico = info_azione.history(period="5d").dropna(subset=["Close"])
+            # auto_adjust=False: per default yfinance "aggiusta" retroattivamente le
+            # chiusure passate per tenere conto dei dividendi staccati (e degli split).
+            # Questo fa sì che, nei giorni intorno a uno stacco dividendo, la variazione %
+            # calcolata risulti diversa da quella mostrata sul mercato reale (che confronta
+            # prezzi non aggiustati). Con auto_adjust=False otteniamo i prezzi "as-is".
+            storico = info_azione.history(period="5d", auto_adjust=False).dropna(subset=["Close"])
         except Exception as errore:
             titoli_falliti.append({"Titolo": ticker, "Motivo": f"Errore di rete/API: {errore}"})
             continue
@@ -234,7 +239,7 @@ with st.spinner("Aggiornamento prezzi e tasso di cambio in corso..."):
             dati_totali.append({
                 "Stato Mercato": stato_mercato,
                 "Titolo": ticker,
-                #"Prezzo Attuale (€)": f"{round(prezzo_corrente_eur, 2)} €",
+                "Prezzo Attuale (€)": f"{round(prezzo_corrente_eur, 2)} €",
                 "Valore Posizione (€)": f"{round(valore_totale_eur, 2)} €",
                 "Var. Giornaliera (€)": f"{round(impatto_giornaliero_eur, 2)} €",
                 "Var. %": f"{round(variazione_percentuale, 2)}%"
