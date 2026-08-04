@@ -159,6 +159,7 @@ def ottieni_info_dividendi(ticker, qty, tasso_usd_per_eur, is_usa):
 dati_totali = []
 dati_dividendi = []
 titoli_falliti = []
+dettaglio_debug = []
 guadagno_totale_giornaliero_eur = 0.0
 totale_dividendi_stimati_eur = 0.0
 prossima_data_assoluta = None
@@ -204,6 +205,8 @@ with st.spinner("Aggiornamento prezzi e tasso di cambio in corso..."):
             continue
 
         if len(storico) >= 2:
+            data_ieri = storico.index[-2]
+            data_oggi = storico.index[-1]
             prezzo_chiusura_ieri = storico['Close'].iloc[-2]
             prezzo_corrente = storico['Close'].iloc[-1]
 
@@ -211,6 +214,15 @@ with st.spinner("Aggiornamento prezzi e tasso di cambio in corso..."):
 
             variazione_unitaria_originale = prezzo_corrente - prezzo_chiusura_ieri
             variazione_percentuale = (variazione_unitaria_originale / prezzo_chiusura_ieri) * 100
+
+            dettaglio_debug.append({
+                "Titolo": ticker,
+                "Data rif. precedente": data_ieri.strftime("%d/%m/%Y %H:%M"),
+                "Chiusura precedente (raw)": round(prezzo_chiusura_ieri, 4),
+                "Data prezzo attuale": data_oggi.strftime("%d/%m/%Y %H:%M"),
+                "Prezzo attuale (raw)": round(prezzo_corrente, 4),
+                "Var. % calcolata": f"{round(variazione_percentuale, 2)}%",
+            })
 
             valore_totale_originale = prezzo_corrente * qty
             impatto_giornaliero_originale = variazione_unitaria_originale * qty
@@ -239,6 +251,7 @@ with st.spinner("Aggiornamento prezzi e tasso di cambio in corso..."):
             dati_totali.append({
                 "Stato Mercato": stato_mercato,
                 "Titolo": ticker,
+                "Quantità": qty,
                 "Prezzo Attuale (€)": f"{round(prezzo_corrente_eur, 2)} €",
                 "Valore Posizione (€)": f"{round(valore_totale_eur, 2)} €",
                 "Var. Giornaliera (€)": f"{round(impatto_giornaliero_eur, 2)} €",
@@ -322,3 +335,14 @@ else:
 if titoli_falliti:
     with st.expander(f"⚠️ {len(titoli_falliti)} titolo/i non caricato/i correttamente — clicca per i dettagli"):
         st.dataframe(pd.DataFrame(titoli_falliti), use_container_width=True, hide_index=True)
+
+### 8. Debug: date e prezzi "raw" usati per calcolare la variazione %
+# Utile per capire se una variazione % sembra "sbagliata": qui si vede esattamente
+# quale chiusura precedente e quale prezzo attuale sono stati usati nel calcolo,
+# così si può confrontare con quanto mostrato da Borsa Italiana o da altre fonti.
+
+with st.expander("🔍 Debug: prezzi raw usati nel calcolo della variazione %"):
+    if dettaglio_debug:
+        st.dataframe(pd.DataFrame(dettaglio_debug), use_container_width=True, hide_index=True)
+    else:
+        st.caption("Nessun dato disponibile.")
