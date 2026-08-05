@@ -95,6 +95,7 @@ MIO_PORTAFOGLIO = [
     {"ticker": "BMPS.MI", "quantita": 160},     
     {"ticker": "ISP.MI", "quantita": 601},
     {"ticker": "PST.MI", "quantita": 162},     
+	{"ticker": "NVDA", "quantita": 10},
     {"ticker": "DAL", "quantita": 27},
     {"ticker": "PH", "quantita": 3},
     {"ticker": "GD", "quantita": 5},
