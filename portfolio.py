@@ -1,6 +1,7 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
+import matplotlib.pyplot as plt
 from datetime import datetime, time as dt_time, timedelta
 from zoneinfo import ZoneInfo
 
@@ -59,6 +60,16 @@ def costruisci_tabella_mercati():
         righe.append({"Mercato": nome_mercato, "Stato": stato, "Countdown": countdown})
     return righe
 
+
+def disegna_grafico_a_torta(etichette, valori, titolo):
+    """Crea una figura matplotlib con un grafico a torta, pronta per st.pyplot()."""
+    fig, ax = plt.subplots(figsize=(4, 4))
+    ax.pie(valori, labels=etichette, autopct="%1.1f%%", startangle=90)
+    ax.axis("equal")
+    ax.set_title(titolo)
+    fig.tight_layout()
+    return fig
+
 ### Configurazione della pagina
 
 st.set_page_config(page_title="Il mio Portafoglio", layout="wide", page_icon="📈")
@@ -89,6 +100,7 @@ MIO_PORTAFOGLIO = [
     {"ticker": "GD", "quantita": 5},
     {"ticker": "COST", "quantita": 2},
     {"ticker": "PG", "quantita": 8},
+    {"ticker": "JPM", "quantita": 14},
     {"ticker": "AIG", "quantita": 27},
     {"ticker": "GOOGL", "quantita": 20},
     {"ticker": "XOM", "quantita": 21},
@@ -219,6 +231,8 @@ dettaglio_debug = []
 guadagno_oggi_eur = 0.0
 guadagno_sessioni_precedenti_eur = 0.0
 titoli_sessione_precedente = []
+dati_valore_pie = []
+dati_variazione_oggi_pie = []
 totale_dividendi_stimati_eur = 0.0
 prossima_data_assoluta = None
 oggi_italia = datetime.now(FUSO_ORARIO_ITALIA).date()
@@ -302,6 +316,7 @@ with st.spinner("Aggiornamento prezzi e tasso di cambio in corso..."):
 
             if sessione_e_di_oggi:
                 guadagno_oggi_eur += impatto_giornaliero_eur
+                dati_variazione_oggi_pie.append({"Titolo": ticker, "Variazione": impatto_giornaliero_eur})
             else:
                 guadagno_sessioni_precedenti_eur += impatto_giornaliero_eur
                 titoli_sessione_precedente.append({
@@ -310,11 +325,16 @@ with st.spinner("Aggiornamento prezzi e tasso di cambio in corso..."):
                     "Riferita al": orario_quotazione.strftime("%d/%m/%Y") if orario_quotazione else "N/D"
                 })
 
+            dati_valore_pie.append({"Titolo": ticker, "Valore": valore_totale_eur})
+
             stato_mercato = verifica_stato_mercato(ticker)
 
             dati_totali.append({
-                "Mercato": stato_mercato,
+                "Stato Mercato": stato_mercato,
                 "Titolo": ticker,
+                "Quantità": qty,
+                "Prezzo Attuale (€)": f"{round(prezzo_corrente_eur, 2)} €",
+                "Valore Posizione (€)": f"{round(valore_totale_eur, 2)} €",
                 "Var. Giornaliera (€)": f"{round(impatto_giornaliero_eur, 2)} €",
                 "Var. %": f"{round(variazione_percentuale, 2)}%",
                 "Aggiornato al": orario_quotazione.strftime("%d/%m %H:%M") if orario_quotazione else "N/D"
@@ -355,17 +375,6 @@ if guadagno_oggi_eur >= 0:
 else:
     st.error(f"### Oggi stai PERDENDO:  {round(guadagno_oggi_eur, 2)} € rispetto a ieri.")
 
-if titoli_sessione_precedente:
-    segno = "+" if guadagno_sessioni_precedenti_eur >= 0 else ""
-    st.info(
-        f"⏳ **{len(titoli_sessione_precedente)} titolo/i non hanno ancora aperto oggi** "
-        f"(la loro ultima sessione disponibile vale {segno}{round(guadagno_sessioni_precedenti_eur, 2)} €, "
-        f"già riflessi nel valore del portafoglio da quella sessione — non incluso nel numero sopra "
-        f"per evitare di contarlo due volte)."
-    )
-    with st.expander("Titoli in attesa di apertura odierna"):
-        st.dataframe(pd.DataFrame(titoli_sessione_precedente), use_container_width=True, hide_index=True)
-
 ### 5. Mostra la tabella dei dettagli
 
 st.write("### 📊 Dettaglio Titoli nel Portafoglio")
@@ -374,6 +383,32 @@ if dati_totali:
     st.dataframe(df, use_container_width=True, hide_index=True)
 else:
     st.warning("Non è stato possibile recuperare i dati dei titoli. Verifica i ticker.")
+
+### 5bis. Grafici a torta: allocazione del portafoglio e contributo alle variazioni odierne
+
+st.write("### 🥧 Grafici")
+
+# Un grafico a torta non può mostrare insieme guadagni (positivi) e perdite (negative):
+# separiamo i titoli aggiornati oggi in "vincitori" e "perdenti" e mostriamo un grafico
+# per ciascun gruppo che è effettivamente presente (uno, l'altro, entrambi o nessuno).
+vincitori_oggi = [d for d in dati_variazione_oggi_pie if d["Variazione"] > 0]
+perdenti_oggi = [d for d in dati_variazione_oggi_pie if d["Variazione"] < 0]
+
+grafici_da_mostrare = [("Allocazione del Portafoglio", dati_valore_pie, "Valore")]
+if vincitori_oggi:
+    grafici_da_mostrare.append(("Contributo ai Guadagni di Oggi", vincitori_oggi, "Variazione"))
+if perdenti_oggi:
+    grafici_da_mostrare.append(("Contributo alle Perdite di Oggi", perdenti_oggi, "Variazione"))
+
+colonne = st.columns(len(grafici_da_mostrare))
+for colonna, (titolo_grafico, dati_grafico, chiave_valore) in zip(colonne, grafici_da_mostrare):
+    with colonna:
+        if dati_grafico:
+            etichette = [d["Titolo"] for d in dati_grafico]
+            valori = [abs(d[chiave_valore]) for d in dati_grafico]
+            st.pyplot(disegna_grafico_a_torta(etichette, valori, titolo_grafico))
+        else:
+            st.caption(f"Nessun dato disponibile per: {titolo_grafico}.")
 
 ### 6. Mostra la stima dei prossimi dividendi
 
